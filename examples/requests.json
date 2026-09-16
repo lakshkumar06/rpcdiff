@@ -1,0 +1,12 @@
+[
+  {"id": 1, "jsonrpc": "2.0", "method": "eth_blockNumber", "params": []},
+  {"id": 2, "jsonrpc": "2.0", "method": "eth_getBalance", "params": ["0x0000000000000000000000000000000000000000", "latest"]},
+  {"id": 3, "jsonrpc": "2.0", "method": "eth_getCode", "params": ["0x0000000000000000000000000000000000000001", "latest"]},
+  {"id": 4, "jsonrpc": "2.0", "method": "eth_getStorageAt", "params": ["0x0000000000000000000000000000000000000001", "0x0", "latest"]},
+  {"id": 5, "jsonrpc": "2.0", "method": "eth_getBlockByNumber", "params": ["0x10", false]},
+  {"id": 6, "jsonrpc": "2.0", "method": "eth_getTransactionReceipt", "params": ["0x1"]},
+  {"id": 7, "jsonrpc": "2.0", "method": "eth_gasPrice", "params": []},
+  {"id": 8, "jsonrpc": "2.0", "method": "eth_chainId", "params": []},
+  {"id": 9, "jsonrpc": "2.0", "method": "eth_syncing", "params": []},
+  {"id": 10, "jsonrpc": "2.0", "method": "eth_call", "params": [{}, "latest"]}
+]
