@@ -112,7 +112,7 @@ func (c *Client) Call(ctx context.Context, endpointURL string, req Request) Call
 		out.HTTPError = fmt.Sprintf("http status %d", resp.StatusCode)
 	}
 
-	parsed, parseErr := parseResponse(body)
+	parsed, parseErr := ParseResponse(body)
 	if parseErr != nil {
 		out.ParseError = parseErr.Error()
 		return out
@@ -122,7 +122,7 @@ func (c *Client) Call(ctx context.Context, endpointURL string, req Request) Call
 	return out
 }
 
-func parseResponse(body []byte) (*Response, error) {
+func ParseResponse(body []byte) (*Response, error) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
 		return nil, fmt.Errorf("empty response body")

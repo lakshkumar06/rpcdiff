@@ -1,0 +1,65 @@
+package rpc
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestCallTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(50 * time.Millisecond)
+	out := c.Call(context.Background(), srv.URL, Request{JSONRPC: "2.0", Method: "eth_blockNumber", Params: json.RawMessage("[]")})
+	if !out.TimedOut {
+		t.Fatalf("expected timeout, got %+v", out)
+	}
+}
+
+func TestCallMalformed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{`))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(time.Second)
+	out := c.Call(context.Background(), srv.URL, Request{JSONRPC: "2.0", Method: "eth_blockNumber", Params: json.RawMessage("[]")})
+	if out.ParseError == "" {
+		t.Fatalf("expected parse error, got %+v", out)
+	}
+}
+
+func TestLoadRequests(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "r.json")
+	if err := os.WriteFile(p, []byte(`[{"id":1,"jsonrpc":"2.0","method":"eth_blockNumber","params":[]}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reqs, err := LoadRequests(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 1 || reqs[0].Method != "eth_blockNumber" {
+		t.Fatalf("%+v", reqs)
+	}
+}
+
+func TestMissingMethodRejected(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "r.json")
+	if err := os.WriteFile(p, []byte(`[{"id":1,"jsonrpc":"2.0","params":[]}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadRequests(p); err == nil {
+		t.Fatal("expected error")
+	}
+}
