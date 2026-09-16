@@ -1,0 +1,7 @@
+/rpcdiff
+/bin/
+*.exe
+report.json
+report.html
+dist/
+.DS_Store
