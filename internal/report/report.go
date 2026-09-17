@@ -26,11 +26,12 @@ type Run struct {
 }
 
 type Summary struct {
-	Total      int            `json:"total"`
-	Matches    int            `json:"matches"`
-	Failures   int            `json:"failures"`
-	ByCategory map[string]int `json:"byCategory"`
-	Slowest    []SlowRequest  `json:"slowest"`
+	Total                   int            `json:"total"`
+	Matches                 int            `json:"matches"`
+	CompatibilityMismatches int            `json:"compatibilityMismatches"`
+	TransportFailures       int            `json:"transportFailures"`
+	ByCategory              map[string]int `json:"byCategory"`
+	Slowest                 []SlowRequest  `json:"slowest"`
 }
 
 type SlowRequest struct {
@@ -41,7 +42,7 @@ type SlowRequest struct {
 	MaxMS       float64 `json:"maxMs"`
 }
 
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 func Build(baseline, candidate, timeout string, results []compare.Result) Run {
 	sum := Summary{
@@ -54,8 +55,10 @@ func Build(baseline, candidate, timeout string, results []compare.Result) Run {
 		switch r.Classification {
 		case compare.Match:
 			sum.Matches++
-		case compare.Timeout, compare.InvalidResponse, compare.Inconclusive:
-			sum.Failures++
+		case compare.Timeout, compare.TransientFailure, compare.InvalidResponse, compare.Inconclusive:
+			sum.TransportFailures++
+		default:
+			sum.CompatibilityMismatches++
 		}
 		max := r.Baseline.LatencyMS
 		if r.Candidate.LatencyMS > max {
@@ -101,8 +104,9 @@ func PrintSummary(w io.Writer, run Run) {
 	fmt.Fprintf(w, "rpcdiff compare  %s vs %s\n", run.Baseline, run.Candidate)
 	fmt.Fprintf(w, "timestamp        %s\n", run.Timestamp.Format(time.RFC3339))
 	fmt.Fprintf(w, "total requests   %d\n", run.Summary.Total)
-	fmt.Fprintf(w, "matches          %d\n", run.Summary.Matches)
-	fmt.Fprintf(w, "failures         %d  (timeout / invalid / inconclusive)\n", run.Summary.Failures)
+	fmt.Fprintf(w, "matches                 %d\n", run.Summary.Matches)
+	fmt.Fprintf(w, "compatibility mismatches %d\n", run.Summary.CompatibilityMismatches)
+	fmt.Fprintf(w, "transport failures       %d  (transient / timeout / invalid / inconclusive)\n", run.Summary.TransportFailures)
 	fmt.Fprintln(w, "by category")
 	cats := make([]string, 0, len(run.Summary.ByCategory))
 	for k := range run.Summary.ByCategory {

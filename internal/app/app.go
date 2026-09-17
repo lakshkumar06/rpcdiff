@@ -13,13 +13,15 @@ import (
 )
 
 type Config struct {
-	Baseline  string
-	Candidate string
-	Requests  string
-	Output    string
-	HTML      string
-	Timeout   time.Duration
-	Workers   int
+	Baseline            string
+	Candidate           string
+	Requests            string
+	Output              string
+	HTML                string
+	Timeout             time.Duration
+	Workers             int
+	Retries             int
+	IgnoreErrorMessages bool
 }
 
 func Run(ctx context.Context, cfg Config) (report.Run, error) {
@@ -37,7 +39,7 @@ func Run(ctx context.Context, cfg Config) (report.Run, error) {
 		return report.Run{}, fmt.Errorf("load requests: %w", err)
 	}
 
-	client := rpc.NewClient(cfg.Timeout)
+	client := rpc.NewClientWithRetries(cfg.Timeout, cfg.Retries)
 	results := make([]compare.Result, len(reqs))
 	sem := make(chan struct{}, cfg.Workers)
 	var wg sync.WaitGroup
@@ -67,7 +69,9 @@ func Run(ctx context.Context, cfg Config) (report.Run, error) {
 			cand := client.Call(ctx, cfg.Candidate, req)
 			base, _ = normalize.Outcome(req.Method, base)
 			cand, nres := normalize.Outcome(req.Method, cand)
-			results[i] = compare.Pair(req.Method, req.Params, base, cand, nres.Applied || normalize.Supported[req.Method])
+			results[i] = compare.PairWithOptions(req.Method, req.Params, base, cand, nres.Applied || normalize.Supported[req.Method], compare.Options{
+				IgnoreErrorMessages: cfg.IgnoreErrorMessages,
+			})
 		}()
 	}
 	wg.Wait()

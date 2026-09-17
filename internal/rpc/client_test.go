@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -22,6 +23,33 @@ func TestCallTimeout(t *testing.T) {
 	out := c.Call(context.Background(), srv.URL, Request{JSONRPC: "2.0", Method: "eth_blockNumber", Params: json.RawMessage("[]")})
 	if !out.TimedOut {
 		t.Fatalf("expected timeout, got %+v", out)
+	}
+}
+
+func TestCallRetriesTemporaryStatus(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
+	}))
+	t.Cleanup(srv.Close)
+	out := NewClientWithRetries(time.Second, 3).Call(context.Background(), srv.URL, Request{JSONRPC: "2.0", Method: "eth_blockNumber", Params: json.RawMessage("[]")})
+	if out.Transient || out.Parsed == nil || out.Attempts != 3 {
+		t.Fatalf("expected recovery after retries, got %+v", out)
+	}
+}
+
+func TestCallPersistentTemporaryStatusIsMarked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+	out := NewClientWithRetries(time.Second, 2).Call(context.Background(), srv.URL, Request{JSONRPC: "2.0", Method: "eth_blockNumber", Params: json.RawMessage("[]")})
+	if !out.Transient || out.StatusCode != http.StatusTooManyRequests || out.Attempts != 3 {
+		t.Fatalf("expected transient failure after retries, got %+v", out)
 	}
 }
 

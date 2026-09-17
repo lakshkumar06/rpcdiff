@@ -11,6 +11,8 @@ import (
 )
 
 const maxBodyBytes = 8 << 20 // 8 MiB
+const defaultRetries = 3
+const maxRetries = 8
 
 // CallOutcome is the recorded result of one HTTP JSON-RPC POST.
 type CallOutcome struct {
@@ -22,6 +24,8 @@ type CallOutcome struct {
 	Parsed         *Response
 	ParseError     string
 	TimedOut       bool
+	Transient      bool
+	Attempts       int
 	JSONRPCError   bool
 	InvalidRequest bool
 }
@@ -30,16 +34,32 @@ type CallOutcome struct {
 type Client struct {
 	http    *http.Client
 	timeout time.Duration
+	retries int
 }
 
 func NewClient(timeout time.Duration) *Client {
+	return NewClientWithRetries(timeout, defaultRetries)
+}
+
+// NewClientWithRetries creates a client with retries after the initial attempt.
+func NewClientWithRetries(timeout time.Duration, retries int) *Client {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
+	if retries < 0 {
+		retries = 0
+	}
+	if retries > maxRetries {
+		retries = maxRetries
+	}
 	return &Client{
 		timeout: timeout,
+		retries: retries,
 		http: &http.Client{
 			Timeout: timeout,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 			Transport: &http.Transport{
 				Proxy:               http.ProxyFromEnvironment,
 				MaxIdleConns:        32,
@@ -50,8 +70,33 @@ func NewClient(timeout time.Duration) *Client {
 	}
 }
 
-// Call sends req to endpointURL. Authorization headers are never set or logged.
+// Call sends req to endpointURL, retrying temporary failures. Authorization
+// headers are never set or logged.
 func (c *Client) Call(ctx context.Context, endpointURL string, req Request) CallOutcome {
+	var last CallOutcome
+	for attempt := 0; attempt <= c.retries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(100*(1<<(attempt-1))) * time.Millisecond
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				last = CallOutcome{URL: endpointURL, HTTPError: ctx.Err().Error(), Transient: true}
+				last.Attempts = attempt
+				return last
+			case <-timer.C:
+			}
+		}
+		last = c.callOnce(ctx, endpointURL, req)
+		last.Attempts = attempt + 1
+		if !last.Transient || attempt == c.retries {
+			return last
+		}
+	}
+	return last
+}
+
+func (c *Client) callOnce(ctx context.Context, endpointURL string, req Request) CallOutcome {
 	out := CallOutcome{URL: endpointURL}
 	if err := req.Validate(); err != nil {
 		out.InvalidRequest = true
@@ -83,6 +128,7 @@ func (c *Client) Call(ctx context.Context, endpointURL string, req Request) Call
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded || isTimeout(err) {
 			out.TimedOut = true
+			out.Transient = true
 			out.HTTPError = "request timed out"
 			return out
 		}
@@ -96,6 +142,7 @@ func (c *Client) Call(ctx context.Context, endpointURL string, req Request) Call
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded || isTimeout(err) {
 			out.TimedOut = true
+			out.Transient = true
 			out.HTTPError = "request timed out while reading body"
 			return out
 		}
@@ -111,6 +158,9 @@ func (c *Client) Call(ctx context.Context, endpointURL string, req Request) Call
 	if resp.StatusCode >= 400 {
 		out.HTTPError = fmt.Sprintf("http status %d", resp.StatusCode)
 	}
+	if isTransientStatus(resp.StatusCode) {
+		out.Transient = true
+	}
 
 	parsed, parseErr := ParseResponse(body)
 	if parseErr != nil {
@@ -120,6 +170,10 @@ func (c *Client) Call(ctx context.Context, endpointURL string, req Request) Call
 	out.Parsed = parsed
 	out.JSONRPCError = parsed.HasError()
 	return out
+}
+
+func isTransientStatus(status int) bool {
+	return status == http.StatusMovedPermanently || status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable
 }
 
 func ParseResponse(body []byte) (*Response, error) {

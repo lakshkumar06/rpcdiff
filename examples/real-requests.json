@@ -1,0 +1,18 @@
+[
+  {"id": 1, "jsonrpc": "2.0", "method": "eth_chainId", "params": []},
+  {"id": 2, "jsonrpc": "2.0", "method": "eth_blockNumber", "params": []},
+  {"id": 3, "jsonrpc": "2.0", "method": "eth_getBlockByNumber", "params": ["0x18cbac6", false]},
+  {"id": 4, "jsonrpc": "2.0", "method": "eth_getBlockByHash", "params": ["0x2a7c59adca512a0dfc0fa2e1dfb38b43ea78168a5b6633cf8b68b677b1d9dcad", false]},
+  {"id": 5, "jsonrpc": "2.0", "method": "eth_getTransactionByHash", "params": ["0xbf6b8c019beb89d4fe07136725f22406c5c08ac2aecf6859ae7049241ab9bb12"]},
+  {"id": 6, "jsonrpc": "2.0", "method": "eth_getTransactionReceipt", "params": ["0xbf6b8c019beb89d4fe07136725f22406c5c08ac2aecf6859ae7049241ab9bb12"]},
+  {"id": 7, "jsonrpc": "2.0", "method": "eth_getLogs", "params": [{"fromBlock": "0x18cbac6", "toBlock": "0x18cbac6", "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "topics": ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a9df523b3ef"]}]},
+  {"id": 8, "jsonrpc": "2.0", "method": "eth_getBalance", "params": ["0x0000000000000000000000000000000000000000", "0x18cbac6"]},
+  {"id": 9, "jsonrpc": "2.0", "method": "eth_getBalance", "params": ["0x0000000000000000000000000000000000000000", "latest"]},
+  {"id": 10, "jsonrpc": "2.0", "method": "eth_call", "params": [{"to": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "data": "0x70a082310000000000000000000000000000000000000000000000000000000000000000"}, "0x18cbac6"]},
+  {"id": 11, "jsonrpc": "2.0", "method": "eth_call", "params": [{"to": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "data": "0x18160ddd"}, "latest"]},
+  {"id": 12, "jsonrpc": "2.0", "method": "eth_rpcdiff_nonexistent", "params": []},
+  {"id": 13, "jsonrpc": "2.0", "method": "eth_getBalance", "params": []},
+  {"id": 14, "jsonrpc": "2.0", "method": "eth_getTransactionCount", "params": ["0x0000000000000000000000000000000000000000", "pending"]},
+  {"id": 15, "jsonrpc": "2.0", "method": "eth_getBalance", "params": ["0x0000000000000000000000000000000000000000", "pending"]},
+  {"id": 16, "jsonrpc": "2.0", "method": "eth_getBlockByNumber", "params": ["pending", false]}
+]

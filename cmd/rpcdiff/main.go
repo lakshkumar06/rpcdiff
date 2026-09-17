@@ -25,9 +25,19 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+	case "gate":
+		if err := runGate(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "gate failed: %v\n", err)
+			os.Exit(1)
+		}
 	case "demo":
 		if err := runDemo(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	case "fixture-server":
+		if err := runFixtureServer(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "fixture-server failed: %v\n", err)
 			os.Exit(1)
 		}
 	case "-h", "--help", "help":
@@ -54,9 +64,83 @@ compare flags:
   --html FILE        Optional HTML report path
   --timeout DURATION Per-request timeout (default 5s)
   --workers N        Concurrent request workers (default 4)
+  --retries N        Retries after the initial attempt (default 3)
+
+gate flags:
+  --baseline URL     Baseline JSON-RPC HTTP endpoint
+  --candidate URL    Candidate JSON-RPC HTTP endpoint
+  --requests FILE    Request suite (default examples/public-requests.json)
+  --output FILE      JSON report (default migration-report.json)
+  --html FILE        HTML report (default migration-report.html)
+  --timeout DURATION Per-request timeout (default 15s)
+  --workers N        Concurrent request workers (default 2)
+  --retries N        Retries after the initial attempt (default 3)
+  --strict-errors    Treat differing JSON-RPC error messages as mismatches
 
 demo starts two in-process fake RPC servers and compares examples/requests.json.
+
+fixture-server flags:
+  --flavor baseline|candidate  Deterministic fixture response flavor
+  --addr HOST:PORT              Listen address (default 127.0.0.1:18545)
 `)
+}
+
+func runFixtureServer(args []string) error {
+	fs := flag.NewFlagSet("fixture-server", flag.ContinueOnError)
+	flavor := fs.String("flavor", "baseline", "fixture response flavor (baseline or candidate)")
+	addr := fs.String("addr", "127.0.0.1:18545", "listen address")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	var selected fixtures.Flavor
+	switch *flavor {
+	case string(fixtures.Baseline):
+		selected = fixtures.Baseline
+	case string(fixtures.Candidate):
+		selected = fixtures.Candidate
+	default:
+		return fmt.Errorf("unknown fixture flavor %q", *flavor)
+	}
+	server := &http.Server{Addr: *addr, Handler: fixtures.Handler(selected)}
+	fmt.Fprintf(os.Stdout, "fixture %s listening on http://%s\n", *flavor, *addr)
+	return server.ListenAndServe()
+}
+
+func runGate(args []string) error {
+	fs := flag.NewFlagSet("gate", flag.ContinueOnError)
+	baseline := fs.String("baseline", "", "baseline RPC URL")
+	candidate := fs.String("candidate", "", "candidate RPC URL")
+	requests := fs.String("requests", filepath.Join("examples", "public-requests.json"), "migration request suite")
+	output := fs.String("output", "migration-report.json", "JSON report output")
+	htmlPath := fs.String("html", "migration-report.html", "HTML report output")
+	timeout := fs.Duration("timeout", 15*time.Second, "per-request timeout")
+	workers := fs.Int("workers", 2, "concurrent request workers")
+	retries := fs.Int("retries", 3, "retries after the initial attempt")
+	strictErrors := fs.Bool("strict-errors", false, "fail on differing JSON-RPC error messages")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *baseline == "" || *candidate == "" {
+		return fmt.Errorf("--baseline and --candidate are required")
+	}
+	run, err := app.Run(context.Background(), app.Config{
+		Baseline: *baseline, Candidate: *candidate, Requests: *requests,
+		Output: *output, HTML: *htmlPath, Timeout: *timeout, Workers: *workers, Retries: *retries,
+		IgnoreErrorMessages: !*strictErrors,
+	})
+	if err != nil {
+		return err
+	}
+	report.PrintSummary(os.Stdout, run)
+	fmt.Fprintf(os.Stdout, "wrote %s\n", *output)
+	if *htmlPath != "" {
+		fmt.Fprintf(os.Stdout, "wrote %s\n", *htmlPath)
+	}
+	if run.Summary.Matches != run.Summary.Total {
+		return fmt.Errorf("%d of %d requests are incompatible; see %s", run.Summary.CompatibilityMismatches+run.Summary.TransportFailures, run.Summary.Total, *output)
+	}
+	fmt.Fprintln(os.Stdout, "migration gate passed")
+	return nil
 }
 
 func runCompare(args []string) error {
@@ -68,6 +152,7 @@ func runCompare(args []string) error {
 	htmlPath := fs.String("html", "", "optional HTML report output")
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request timeout")
 	workers := fs.Int("workers", 4, "concurrent workers")
+	retries := fs.Int("retries", 3, "retries after the initial attempt")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -82,6 +167,7 @@ func runCompare(args []string) error {
 		HTML:      *htmlPath,
 		Timeout:   *timeout,
 		Workers:   *workers,
+		Retries:   *retries,
 	})
 	if err != nil {
 		return err

@@ -55,6 +55,64 @@ go run ./cmd/rpcdiff demo --output report.json --html report.html
 
 Or: `make demo`
 
+## CI migration gate
+
+Use `gate` before changing the RPC endpoint used by an application. It runs the
+realistic `examples/public-requests.json` suite by default, writes both a
+machine-readable JSON report and an HTML compatibility report, and exits with
+status 1 if any request is not a `MATCH`.
+
+```bash
+go run ./cmd/rpcdiff gate \
+  --baseline "$OLD_RPC_URL" \
+  --candidate "$NEW_RPC_URL" \
+  --output migration-report.json \
+  --html migration-report.html
+```
+
+Provider-specific JSON-RPC error wording is ignored by the gate by default;
+error codes, error data, results, response shape, timeouts, and malformed
+responses still fail it. Use `--strict-errors` to compare error messages too.
+HTTP 301, 429, and 503 responses plus request timeouts are retried three times
+with exponential backoff. If the temporary failure persists, the report marks
+the request `TRANSIENT_FAILURE` so it is distinguishable from an incompatibility.
+Upload `migration-report.html` as a CI artifact for a readable per-request
+report, or use the JSON file for annotations and automation.
+
+## GitHub Actions CI
+
+`.github/workflows/ci.yml` runs on every push and pull request. It runs the unit
+tests, starts deterministic baseline and candidate fixture providers, and runs
+the migration gate against `examples/ci-requests.json`. The workflow uploads
+the JSON and HTML reports (plus fixture logs) as the `migration-reports`
+artifact. Because the gate exits non-zero for any non-`MATCH` result, a broken
+compatibility contract fails CI.
+
+The public portfolio suite remains `examples/public-requests.json`; its 16
+requests cover valid reads plus deliberate error and pending-state cases. The
+CI-specific suite is intentionally small and deterministic so CI does not
+depend on public RPC availability or moving blockchain state.
+
+## Real endpoint suites
+
+`examples/public-requests.json` is the 16-request portfolio suite. It covers
+chain identity, blocks, transactions, receipts, logs, balances, contract
+calls, deliberate error handling, and pending-state queries. Run it against
+two public endpoints with:
+
+```bash
+./rpcdiff compare \
+  --baseline https://public.1rpc.io/eth \
+  --candidate https://ethereum-rpc.publicnode.com \
+  --requests examples/public-requests.json \
+  --output report-public.json \
+  --html report-public.html \
+  --timeout 15s \
+  --workers 2
+```
+
+`examples/failure-requests.json` is kept separate for robustness checks. It contains a fake method and invalid parameters; use it as a second, explicitly failure-oriented run rather than mixing those results into the compatibility portfolio report.
+
 ## Request-file format
 
 A JSON array of JSON-RPC 2.0 objects:
@@ -94,6 +152,7 @@ A JSON array of JSON-RPC 2.0 objects:
 | `ERROR_MISMATCH` | Error presence or error object differs |
 | `SHAPE_MISMATCH` | Type, array length, extra/missing field, or null vs missing |
 | `TIMEOUT` | Either HTTP call exceeded `--timeout` |
+| `TRANSIENT_FAILURE` | 301, 429, 503, or timeout persisted after retries |
 | `INVALID_RESPONSE` | HTTP error or malformed / non-JSON-RPC body |
 | `INCONCLUSIVE` | Request could not be compared (invalid input, cancelled run) |
 
@@ -103,9 +162,10 @@ Difference paths look like `result.balance`, `result.logs[0].address`, or `error
 
 ```
 rpcdiff compare  http://127.0.0.1:1234 vs http://127.0.0.1:5678
-total requests   10
-matches          4
-failures         2  (timeout / invalid / inconclusive)
+total requests           10
+matches                  4
+compatibility mismatches 4
+transport failures       2  (timeout / invalid / inconclusive)
 by category
   ERROR_MISMATCH     1
   INVALID_RESPONSE   1

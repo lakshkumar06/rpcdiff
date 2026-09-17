@@ -17,6 +17,31 @@ func mustParse(t *testing.T, s string) Value {
 	return v
 }
 
+func TestPairCanIgnoreProviderSpecificErrorMessages(t *testing.T) {
+	base := rpc.CallOutcome{JSONRPCError: true, Parsed: &rpc.Response{Error: &rpc.Error{Code: -32000, Message: "execution reverted"}}}
+	cand := rpc.CallOutcome{JSONRPCError: true, Parsed: &rpc.Response{Error: &rpc.Error{Code: -32000, Message: "VM execution reverted"}}}
+	strict := Pair("eth_call", json.RawMessage("[]"), base, cand, false)
+	if strict.Classification != ErrorMismatch {
+		t.Fatalf("strict classification = %s", strict.Classification)
+	}
+	ignored := PairWithOptions("eth_call", json.RawMessage("[]"), base, cand, false, Options{IgnoreErrorMessages: true})
+	if ignored.Classification != Match {
+		t.Fatalf("ignored classification = %s", ignored.Classification)
+	}
+	if len(ignored.Notes) != 1 {
+		t.Fatalf("notes = %#v", ignored.Notes)
+	}
+}
+
+func TestPairStillCatchesErrorCodeChangesWhenMessagesIgnored(t *testing.T) {
+	base := rpc.CallOutcome{JSONRPCError: true, Parsed: &rpc.Response{Error: &rpc.Error{Code: -32000, Message: "a"}}}
+	cand := rpc.CallOutcome{JSONRPCError: true, Parsed: &rpc.Response{Error: &rpc.Error{Code: -32603, Message: "b"}}}
+	got := PairWithOptions("eth_call", json.RawMessage("[]"), base, cand, false, Options{IgnoreErrorMessages: true})
+	if got.Classification != ErrorMismatch {
+		t.Fatalf("classification = %s", got.Classification)
+	}
+}
+
 func TestEqualDifferentKeyOrder(t *testing.T) {
 	left := mustParse(t, `{"b":1,"a":2}`)
 	right := mustParse(t, `{"a":2,"b":1}`)

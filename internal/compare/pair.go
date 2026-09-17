@@ -9,8 +9,36 @@ import (
 
 // Pair compares two JSON-RPC call outcomes after optional normalization of the JSON bodies.
 func Pair(method string, params json.RawMessage, baseline, candidate rpc.CallOutcome, normalized bool) Result {
+	return PairWithOptions(method, params, baseline, candidate, normalized, Options{})
+}
+
+// Options controls comparison policy. The default is deliberately strict.
+type Options struct {
+	// IgnoreErrorMessages treats provider-specific JSON-RPC error wording as
+	// non-semantic, while continuing to compare error code and data.
+	IgnoreErrorMessages bool
+}
+
+// PairWithOptions compares two outcomes using an explicit migration policy.
+func PairWithOptions(method string, params json.RawMessage, baseline, candidate rpc.CallOutcome, normalized bool, options Options) Result {
 	diffs := diffOutcomes(baseline, candidate)
-	return Classify(method, params, baseline, candidate, diffs, normalized)
+	ignoredErrorMessage := false
+	if options.IgnoreErrorMessages {
+		kept := diffs[:0]
+		for _, diff := range diffs {
+			if diff.Path == "error.message" {
+				ignoredErrorMessage = true
+				continue
+			}
+			kept = append(kept, diff)
+		}
+		diffs = kept
+	}
+	result := Classify(method, params, baseline, candidate, diffs, normalized)
+	if ignoredErrorMessage {
+		result.Notes = append(result.Notes, "ignored provider-specific JSON-RPC error.message difference")
+	}
+	return result
 }
 
 func Classify(method string, params json.RawMessage, baseline, candidate rpc.CallOutcome, diffs []Diff, normalized bool) Result {

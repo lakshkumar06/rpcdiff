@@ -55,7 +55,7 @@ func TestRunAgainstFixtureServers(t *testing.T) {
 		"eth_getBlockByNumber":      compare.ShapeMismatch,
 		"eth_getTransactionReceipt": compare.ValueMismatch,
 		"eth_gasPrice":              compare.ErrorMismatch,
-		"eth_chainId":               compare.Timeout,
+		"eth_chainId":               compare.TransientFailure,
 		"eth_syncing":               compare.InvalidResponse,
 		"eth_call":                  compare.Match,
 	}

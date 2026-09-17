@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Run unit tests
+        run: go test ./...
+
+  migration-gate:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Build rpcdiff
+        run: go build -o rpcdiff ./cmd/rpcdiff
+      - name: Start deterministic fixture providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./rpcdiff fixture-server --flavor baseline --addr 127.0.0.1:18545 > baseline-fixture.log 2>&1 &
+          echo $! > baseline-fixture.pid
+          ./rpcdiff fixture-server --flavor candidate --addr 127.0.0.1:18546 > candidate-fixture.log 2>&1 &
+          echo $! > candidate-fixture.pid
+          for attempt in {1..20}; do
+            if curl --silent --show-error --fail \
+              -H 'Content-Type: application/json' \
+              --data '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}' \
+              http://127.0.0.1:18545 >/dev/null \
+              && curl --silent --show-error --fail \
+              -H 'Content-Type: application/json' \
+              --data '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}' \
+              http://127.0.0.1:18546 >/dev/null; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          echo 'fixture providers did not become ready'
+          cat baseline-fixture.log candidate-fixture.log
+          exit 1
+      - name: Run migration gate
+        run: |
+          ./rpcdiff gate \
+            --baseline http://127.0.0.1:18545 \
+            --candidate http://127.0.0.1:18546 \
+            --requests examples/ci-requests.json \
+            --output migration-report.json \
+            --html migration-report.html \
+            --timeout 1s \
+            --workers 2 \
+            --retries 0
+      - name: Upload migration reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-reports
+          path: |
+            migration-report.json
+            migration-report.html
+            baseline-fixture.log
+            candidate-fixture.log
+      - name: Stop deterministic fixture providers
+        if: always()
+        run: |
+          kill "$(cat baseline-fixture.pid 2>/dev/null || true)" "$(cat candidate-fixture.pid 2>/dev/null || true)" 2>/dev/null || true

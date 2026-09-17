@@ -1,0 +1,4 @@
+[
+  {"id": 1, "jsonrpc": "2.0", "method": "eth_rpcdiff_nonexistent", "params": []},
+  {"id": 2, "jsonrpc": "2.0", "method": "eth_getBalance", "params": []}
+]

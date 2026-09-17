@@ -10,13 +10,14 @@ import (
 type Classification string
 
 const (
-	Match           Classification = "MATCH"
-	ValueMismatch   Classification = "VALUE_MISMATCH"
-	ErrorMismatch   Classification = "ERROR_MISMATCH"
-	ShapeMismatch   Classification = "SHAPE_MISMATCH"
-	Timeout         Classification = "TIMEOUT"
-	InvalidResponse Classification = "INVALID_RESPONSE"
-	Inconclusive    Classification = "INCONCLUSIVE"
+	Match            Classification = "MATCH"
+	ValueMismatch    Classification = "VALUE_MISMATCH"
+	ErrorMismatch    Classification = "ERROR_MISMATCH"
+	ShapeMismatch    Classification = "SHAPE_MISMATCH"
+	Timeout          Classification = "TIMEOUT"
+	InvalidResponse  Classification = "INVALID_RESPONSE"
+	Inconclusive     Classification = "INCONCLUSIVE"
+	TransientFailure Classification = "TRANSIENT_FAILURE"
 )
 
 // Result is the comparison of one request against both endpoints.
@@ -37,6 +38,8 @@ type Side struct {
 	StatusCode     int             `json:"statusCode"`
 	HTTPError      string          `json:"httpError,omitempty"`
 	TimedOut       bool            `json:"timedOut"`
+	Transient      bool            `json:"transient"`
+	Attempts       int             `json:"attempts"`
 	JSONRPCError   bool            `json:"jsonrpcError"`
 	ParseError     string          `json:"parseError,omitempty"`
 	InvalidRequest bool            `json:"invalidRequest,omitempty"`
@@ -47,6 +50,9 @@ func classify(baseline, candidate rpc.CallOutcome, diffs []Diff) (Classification
 	var notes []string
 	if baseline.InvalidRequest || candidate.InvalidRequest {
 		return Inconclusive, []string{"request was not a valid JSON-RPC call"}
+	}
+	if baseline.Transient || candidate.Transient {
+		return TransientFailure, []string{"temporary provider failure remained after retries"}
 	}
 	if baseline.TimedOut || candidate.TimedOut {
 		return Timeout, notes
@@ -123,6 +129,8 @@ func sideFrom(o rpc.CallOutcome) Side {
 		StatusCode:     o.StatusCode,
 		HTTPError:      o.HTTPError,
 		TimedOut:       o.TimedOut,
+		Transient:      o.Transient,
+		Attempts:       o.Attempts,
 		JSONRPCError:   o.JSONRPCError,
 		ParseError:     o.ParseError,
 		InvalidRequest: o.InvalidRequest,
