@@ -18,6 +18,7 @@ const (
 	InvalidResponse  Classification = "INVALID_RESPONSE"
 	Inconclusive     Classification = "INCONCLUSIVE"
 	TransientFailure Classification = "TRANSIENT_FAILURE"
+	Skipped          Classification = "SKIPPED"
 )
 
 // Result is the comparison of one request against both endpoints.

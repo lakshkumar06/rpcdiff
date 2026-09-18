@@ -15,9 +15,11 @@ import (
 type Run struct {
 	Tool       string           `json:"tool"`
 	Version    string           `json:"version"`
+	Mode       string           `json:"mode,omitempty"`
 	Timestamp  time.Time        `json:"timestamp"`
 	Baseline   string           `json:"baseline"`
 	Candidate  string           `json:"candidate"`
+	Proxy      string           `json:"proxy,omitempty"`
 	Timeout    string           `json:"timeout"`
 	Requests   int              `json:"requestCount"`
 	Summary    Summary          `json:"summary"`
@@ -30,6 +32,7 @@ type Summary struct {
 	Matches                 int            `json:"matches"`
 	CompatibilityMismatches int            `json:"compatibilityMismatches"`
 	TransportFailures       int            `json:"transportFailures"`
+	Skipped                 int            `json:"skipped"`
 	ByCategory              map[string]int `json:"byCategory"`
 	Slowest                 []SlowRequest  `json:"slowest"`
 }
@@ -42,9 +45,13 @@ type SlowRequest struct {
 	MaxMS       float64 `json:"maxMs"`
 }
 
-const Version = "0.2.0"
+const Version = "0.3.0"
 
 func Build(baseline, candidate, timeout string, results []compare.Result) Run {
+	return BuildMode("compare", baseline, candidate, "", timeout, results)
+}
+
+func BuildMode(mode, baseline, candidate, proxy, timeout string, results []compare.Result) Run {
 	sum := Summary{
 		Total:      len(results),
 		ByCategory: map[string]int{},
@@ -57,6 +64,8 @@ func Build(baseline, candidate, timeout string, results []compare.Result) Run {
 			sum.Matches++
 		case compare.Timeout, compare.TransientFailure, compare.InvalidResponse, compare.Inconclusive:
 			sum.TransportFailures++
+		case compare.Skipped:
+			sum.Skipped++
 		default:
 			sum.CompatibilityMismatches++
 		}
@@ -80,14 +89,16 @@ func Build(baseline, candidate, timeout string, results []compare.Result) Run {
 	return Run{
 		Tool:       "rpcdiff",
 		Version:    Version,
+		Mode:       mode,
 		Timestamp:  time.Now().UTC(),
 		Baseline:   baseline,
 		Candidate:  candidate,
+		Proxy:      proxy,
 		Timeout:    timeout,
 		Requests:   len(results),
 		Summary:    sum,
 		Results:    results,
-		Disclaimer: "This report compares two JSON-RPC HTTP endpoints for a fixed request list. It does not prove semantic equivalence of Ethereum implementations, pin chain state, or generate requests.",
+		Disclaimer: "This report compares JSON-RPC responses using deterministic rules. It does not prove semantic equivalence of Ethereum implementations or pin chain state.",
 	}
 }
 
@@ -107,6 +118,7 @@ func PrintSummary(w io.Writer, run Run) {
 	fmt.Fprintf(w, "matches                 %d\n", run.Summary.Matches)
 	fmt.Fprintf(w, "compatibility mismatches %d\n", run.Summary.CompatibilityMismatches)
 	fmt.Fprintf(w, "transport failures       %d  (transient / timeout / invalid / inconclusive)\n", run.Summary.TransportFailures)
+	fmt.Fprintf(w, "skipped                  %d  (write or unknown methods)\n", run.Summary.Skipped)
 	fmt.Fprintln(w, "by category")
 	cats := make([]string, 0, len(run.Summary.ByCategory))
 	for k := range run.Summary.ByCategory {
@@ -127,7 +139,7 @@ func PrintSummary(w io.Writer, run Run) {
 	fmt.Fprintln(w, "mismatches")
 	any := false
 	for i, r := range run.Results {
-		if r.Classification == compare.Match {
+		if r.Classification == compare.Match || r.Classification == compare.Skipped {
 			continue
 		}
 		any = true

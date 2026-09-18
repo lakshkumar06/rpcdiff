@@ -34,10 +34,13 @@ ul { margin-top: .35rem; }
 	b.WriteString("<h1>rpcdiff</h1>\n<div class=\"meta\">")
 	b.WriteString("<div>Baseline: <code>" + html.EscapeString(run.Baseline) + "</code></div>")
 	b.WriteString("<div>Candidate: <code>" + html.EscapeString(run.Candidate) + "</code></div>")
+	if run.Proxy != "" {
+		b.WriteString("<div>Proxy: <code>" + html.EscapeString(run.Proxy) + "</code></div>")
+	}
 	b.WriteString("<div>Time: " + html.EscapeString(run.Timestamp.Format("2006-01-02 15:04:05 UTC")) + "</div>")
-	b.WriteString("<div>Requests: " + strconv.Itoa(run.Summary.Total) + " &nbsp; Matches: " + strconv.Itoa(run.Summary.Matches) + " &nbsp; Compatibility mismatches: " + strconv.Itoa(run.Summary.CompatibilityMismatches) + " &nbsp; Transport failures: " + strconv.Itoa(run.Summary.TransportFailures) + "</div>")
+	b.WriteString("<div>Requests: " + strconv.Itoa(run.Summary.Total) + " &nbsp; Matches: " + strconv.Itoa(run.Summary.Matches) + " &nbsp; Compatibility mismatches: " + strconv.Itoa(run.Summary.CompatibilityMismatches) + " &nbsp; Transport failures: " + strconv.Itoa(run.Summary.TransportFailures) + " &nbsp; Skipped: " + strconv.Itoa(run.Summary.Skipped) + "</div>")
 	statusClass, status := "pass", "COMPATIBLE"
-	if run.Summary.Matches != run.Summary.Total {
+	if run.Summary.CompatibilityMismatches > 0 || run.Summary.TransportFailures > 0 {
 		statusClass, status = "fail", "INCOMPATIBLE"
 	}
 	b.WriteString("<div class=\"" + statusClass + "\">Gate status: " + status + "</div>")
@@ -50,13 +53,14 @@ ul { margin-top: .35rem; }
 		{label: "Matches", count: run.Summary.Matches},
 		{label: "Compatibility mismatches", count: run.Summary.CompatibilityMismatches},
 		{label: "Transport failures", count: run.Summary.TransportFailures},
+		{label: "Skipped", count: run.Summary.Skipped},
 	} {
 		if category.count > 0 {
 			b.WriteString("<tr><td>" + category.label + "</td><td>" + strconv.Itoa(category.count) + "</td></tr>\n")
 		}
 	}
 	b.WriteString("</table>\n<h3>By classification</h3>\n<table><tr><th>Classification</th><th>Count</th></tr>\n")
-	for _, class := range []string{"MATCH", "VALUE_MISMATCH", "SHAPE_MISMATCH", "ERROR_MISMATCH", "TIMEOUT", "TRANSIENT_FAILURE", "INVALID_RESPONSE", "INCONCLUSIVE"} {
+	for _, class := range []string{"MATCH", "VALUE_MISMATCH", "SHAPE_MISMATCH", "ERROR_MISMATCH", "TIMEOUT", "TRANSIENT_FAILURE", "INVALID_RESPONSE", "INCONCLUSIVE", "SKIPPED"} {
 		if count := run.Summary.ByCategory[class]; count > 0 {
 			b.WriteString("<tr><td>" + class + "</td><td>" + strconv.Itoa(count) + "</td></tr>\n")
 		}

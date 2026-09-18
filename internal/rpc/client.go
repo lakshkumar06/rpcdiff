@@ -73,6 +73,26 @@ func NewClientWithRetries(timeout time.Duration, retries int) *Client {
 // Call sends req to endpointURL, retrying temporary failures. Authorization
 // headers are never set or logged.
 func (c *Client) Call(ctx context.Context, endpointURL string, req Request) CallOutcome {
+	if err := req.Validate(); err != nil {
+		return CallOutcome{URL: endpointURL, HTTPError: err.Error(), InvalidRequest: true}
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return CallOutcome{URL: endpointURL, HTTPError: fmt.Sprintf("marshal request: %v", err), InvalidRequest: true}
+	}
+	return c.callPayload(ctx, endpointURL, payload)
+}
+
+// CallRaw sends an already encoded JSON-RPC request. It is used by the shadow
+// proxy so the baseline sees the same request body that the application sent.
+func (c *Client) CallRaw(ctx context.Context, endpointURL string, payload []byte) CallOutcome {
+	if len(bytes.TrimSpace(payload)) == 0 {
+		return CallOutcome{URL: endpointURL, HTTPError: "empty request body", InvalidRequest: true}
+	}
+	return c.callPayload(ctx, endpointURL, payload)
+}
+
+func (c *Client) callPayload(ctx context.Context, endpointURL string, payload []byte) CallOutcome {
 	var last CallOutcome
 	for attempt := 0; attempt <= c.retries; attempt++ {
 		if attempt > 0 {
@@ -87,7 +107,7 @@ func (c *Client) Call(ctx context.Context, endpointURL string, req Request) Call
 			case <-timer.C:
 			}
 		}
-		last = c.callOnce(ctx, endpointURL, req)
+		last = c.callOnce(ctx, endpointURL, payload)
 		last.Attempts = attempt + 1
 		if !last.Transient || attempt == c.retries {
 			return last
@@ -96,20 +116,8 @@ func (c *Client) Call(ctx context.Context, endpointURL string, req Request) Call
 	return last
 }
 
-func (c *Client) callOnce(ctx context.Context, endpointURL string, req Request) CallOutcome {
+func (c *Client) callOnce(ctx context.Context, endpointURL string, payload []byte) CallOutcome {
 	out := CallOutcome{URL: endpointURL}
-	if err := req.Validate(); err != nil {
-		out.InvalidRequest = true
-		out.HTTPError = err.Error()
-		return out
-	}
-
-	payload, err := json.Marshal(req)
-	if err != nil {
-		out.InvalidRequest = true
-		out.HTTPError = fmt.Sprintf("marshal request: %v", err)
-		return out
-	}
 
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()

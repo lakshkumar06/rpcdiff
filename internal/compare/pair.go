@@ -12,6 +12,18 @@ func Pair(method string, params json.RawMessage, baseline, candidate rpc.CallOut
 	return PairWithOptions(method, params, baseline, candidate, normalized, Options{})
 }
 
+// Skipped records a request that was intentionally sent only to the baseline.
+// It is used by shadow mode for methods outside the conservative read allowlist.
+func SkippedResult(method string, params json.RawMessage, baseline rpc.CallOutcome, note string) Result {
+	return Result{
+		Method:         method,
+		Params:         params,
+		Classification: Skipped,
+		Baseline:       sideFrom(baseline),
+		Notes:          []string{note},
+	}
+}
+
 // Options controls comparison policy. The default is deliberately strict.
 type Options struct {
 	// IgnoreErrorMessages treats provider-specific JSON-RPC error wording as
