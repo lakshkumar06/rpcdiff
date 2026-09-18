@@ -77,3 +77,15 @@ func TestGateFailureSummaryNamesFailureTypes(t *testing.T) {
 		t.Fatalf("mixed summary = %q", got)
 	}
 }
+
+func TestShadowCIFailsOnlyForMeaningfulResults(t *testing.T) {
+	if shadowCIFails(report.Summary{Skipped: 2}) {
+		t.Fatal("skipped writes should not fail shadow CI")
+	}
+	if !shadowCIFails(report.Summary{CompatibilityMismatches: 1}) {
+		t.Fatal("compatibility mismatch should fail shadow CI")
+	}
+	if !shadowCIFails(report.Summary{TransportFailures: 1}) {
+		t.Fatal("provider failure should fail shadow CI")
+	}
+}

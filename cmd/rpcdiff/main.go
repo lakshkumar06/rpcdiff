@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"rpcdiff/internal/app"
 	"rpcdiff/internal/fixtures"
 	"rpcdiff/internal/report"
+	"rpcdiff/internal/shadow"
 )
 
 func main() {
@@ -29,6 +32,11 @@ func main() {
 	case "gate":
 		if err := runGate(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "gate failed: %v\n", err)
+			os.Exit(1)
+		}
+	case "shadow":
+		if err := runShadow(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "shadow failed: %v\n", err)
 			os.Exit(1)
 		}
 	case "demo":
@@ -55,6 +63,7 @@ func usage(w *os.File) {
 
 Usage:
   rpcdiff compare --baseline URL --candidate URL --requests FILE --output FILE [flags]
+  rpcdiff shadow --baseline URL --candidate URL [flags]
   rpcdiff demo [--output FILE] [--html FILE]
 
 compare flags:
@@ -76,6 +85,18 @@ gate flags:
   --timeout DURATION Per-request timeout (default 15s)
   --workers N        Concurrent request workers (default 2)
   --retries N        Retries after the initial attempt (default 3)
+  --strict-errors    Treat differing JSON-RPC error messages as mismatches
+
+shadow flags:
+  --baseline URL     Baseline JSON-RPC HTTP endpoint used by the application
+  --candidate URL    Candidate JSON-RPC HTTP endpoint used for safe reads only
+  --listen HOST:PORT Local proxy address (default 127.0.0.1:18547)
+  --output FILE      JSON report (default shadow-report.json)
+  --html FILE        HTML report (default shadow-report.html)
+  --timeout DURATION Candidate/baseline request timeout (default 5s)
+  --retries N        Candidate retries after the initial attempt (default 0)
+  --duration DURATION Stop automatically after this duration (default waits for signal)
+  --ci               Exit non-zero for incompatibilities or provider failures
   --strict-errors    Treat differing JSON-RPC error messages as mismatches
 
 demo starts two in-process fake RPC servers and compares examples/requests.json.
@@ -153,6 +174,89 @@ func gateFailureSummary(summary report.Summary) string {
 		parts = append(parts, fmt.Sprintf("%d transport failures", summary.TransportFailures))
 	}
 	return strings.Join(parts, " and ")
+}
+
+func runShadow(args []string) error {
+	fs := flag.NewFlagSet("shadow", flag.ContinueOnError)
+	baseline := fs.String("baseline", "", "baseline RPC URL")
+	candidate := fs.String("candidate", "", "candidate RPC URL")
+	listen := fs.String("listen", "127.0.0.1:18547", "local proxy listen address")
+	output := fs.String("output", "shadow-report.json", "JSON report output")
+	htmlPath := fs.String("html", "shadow-report.html", "HTML report output")
+	timeout := fs.Duration("timeout", 5*time.Second, "per-provider request timeout")
+	retries := fs.Int("retries", 0, "candidate retries after the initial attempt")
+	duration := fs.Duration("duration", 0, "stop automatically after this duration")
+	ci := fs.Bool("ci", false, "exit non-zero for incompatibilities or provider failures")
+	strictErrors := fs.Bool("strict-errors", false, "fail on differing JSON-RPC error messages")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *baseline == "" || *candidate == "" {
+		return fmt.Errorf("--baseline and --candidate are required")
+	}
+	proxy, err := shadow.NewProxy(shadow.Config{
+		Baseline: *baseline, Candidate: *candidate, Timeout: *timeout, Retries: *retries,
+		IgnoreErrorMessages: !*strictErrors,
+	})
+	if err != nil {
+		return err
+	}
+
+	server := &http.Server{Addr: *listen, Handler: proxy.Handler()}
+	ln, err := netListen("tcp", *listen)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", *listen, err)
+	}
+	proxyURL := "http://" + ln.Addr().String()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve(ln) }()
+	fmt.Fprintf(os.Stdout, "shadow proxy listening on %s\n", proxyURL)
+	fmt.Fprintln(os.Stdout, "send application JSON-RPC traffic to this URL; stop with Ctrl-C to write reports")
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var timer <-chan time.Time
+	if *duration > 0 {
+		t := time.NewTimer(*duration)
+		defer t.Stop()
+		timer = t.C
+	}
+	select {
+	case <-ctx.Done():
+	case <-timer:
+	case err := <-serveErr:
+		if err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("proxy server: %w", err)
+		}
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), *timeout+time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("shutdown proxy: %w", err)
+	}
+	run := proxy.Report(proxyURL)
+	if err := report.WriteJSON(*output, run); err != nil {
+		return fmt.Errorf("write json report: %w", err)
+	}
+	if *htmlPath != "" {
+		if err := report.WriteHTML(*htmlPath, run); err != nil {
+			return fmt.Errorf("write html report: %w", err)
+		}
+	}
+	report.PrintSummary(os.Stdout, run)
+	fmt.Fprintf(os.Stdout, "wrote %s\n", *output)
+	if *htmlPath != "" {
+		fmt.Fprintf(os.Stdout, "wrote %s\n", *htmlPath)
+	}
+	if *ci && shadowCIFails(run.Summary) {
+		return fmt.Errorf("%s; see %s", gateFailureSummary(run.Summary), *output)
+	}
+	return nil
+}
+
+func shadowCIFails(summary report.Summary) bool {
+	return summary.CompatibilityMismatches > 0 || summary.TransportFailures > 0
 }
 
 func runCompare(args []string) error {

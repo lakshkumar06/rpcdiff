@@ -55,6 +55,59 @@ go run ./cmd/rpcdiff demo --output report.json --html report.html
 
 Or: `make demo`
 
+## Shadow proxy for real application traffic
+
+`shadow` lets an application keep using the baseline provider while `rpcdiff`
+observes its real JSON-RPC traffic. The proxy forwards every request to the
+baseline and returns that response immediately. It asynchronously duplicates
+only methods in the conservative read-only allowlist to the candidate, then
+compares the two outcomes with the same normalization and comparison engine
+used by `compare` and `gate`.
+
+Transaction and state-changing methods such as `eth_sendRawTransaction`,
+`eth_sendTransaction`, `personal_sendTransaction`, and unknown methods are
+forwarded to the baseline only and recorded as `SKIPPED`. The baseline call
+uses no retries, so the proxy does not replay a transaction. Candidate calls
+can be retried with `--retries`; candidate latency and provider errors are
+recorded in the report and never delay the baseline response.
+
+Start a local proxy for a staging application:
+
+```bash
+go run ./cmd/rpcdiff shadow \
+  --baseline "$STAGING_RPC_URL" \
+  --candidate "$CANDIDATE_RPC_URL" \
+  --listen 127.0.0.1:18547 \
+  --output shadow-report.json \
+  --html shadow-report.html \
+  --timeout 5s
+```
+
+Configure the application or staging job to use
+`http://127.0.0.1:18547` as its JSON-RPC URL, exercise the application, and
+press Ctrl-C when the observation window is complete. The proxy then waits for
+outstanding candidate reads and writes both reports. Do not put provider API
+keys in the command line or repository; configure provider URLs through the
+staging environment.
+
+For a bounded CI observation window, use `--duration` and `--ci`:
+
+```bash
+go run ./cmd/rpcdiff shadow \
+  --baseline "$STAGING_RPC_URL" \
+  --candidate "$CANDIDATE_RPC_URL" \
+  --listen 127.0.0.1:18547 \
+  --duration 60s \
+  --ci \
+  --output shadow-report.json \
+  --html shadow-report.html
+```
+
+Run the application test or smoke test against the proxy during those 60
+seconds. CI exits non-zero for compatibility mismatches or provider/transport
+failures. `MATCH` and `SKIPPED` results pass; skipped writes remain visible in
+both reports so the traffic coverage is auditable.
+
 ## CI migration gate
 
 Use `gate` before changing the RPC endpoint used by an application. It runs the
@@ -110,6 +163,13 @@ flowchart LR
     F --> G[Terminal summary]
     F --> H[JSON report]
     F --> I[HTML report]
+    J[CLI: shadow] --> K[Local HTTP proxy]
+    K --> L[Baseline provider response]
+    K -. async safe reads .-> M[Candidate provider]
+    L --> N[Normalize + compare]
+    M --> N
+    N --> H
+    N --> I
 ```
 
 See [docs/rpcdiff-demo.mp4](docs/rpcdiff-demo.mp4) for a short walkthrough of
@@ -206,6 +266,7 @@ The demo is wired so you can see every category: padded hex that matches after Q
 - No auth headers (and the client will not log secrets)
 - No batch JSON-RPC arrays
 - No WebSocket / IPC
+- Shadow mode accepts one JSON-RPC object per HTTP request; batch proxying is not supported
 - No chain pinning (`eth_call` at a block hash you did not supply)
 - Conservative normalization only; hex DATA length differences are mismatches
 - Latency numbers are wall-clock and not a benchmark
@@ -221,12 +282,13 @@ The demo is wired so you can see every category: padded hex that matches after Q
 ## Layout
 
 ```
-cmd/rpcdiff/          CLI (compare, demo)
+cmd/rpcdiff/          CLI (compare, gate, shadow, demo)
 internal/rpc/         HTTP JSON-RPC client and request files
 internal/compare/     Recursive JSON compare + classification
 internal/normalize/   Method-aware hex rules
 internal/report/      Terminal, JSON, HTML
 internal/app/         Orchestration
+internal/shadow/      Read-only shadow proxy and recorder
 internal/fixtures/    Fake RPC servers
 examples/requests.json
 ```
