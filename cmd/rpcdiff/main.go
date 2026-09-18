@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"rpcdiff/internal/app"
@@ -137,10 +138,21 @@ func runGate(args []string) error {
 		fmt.Fprintf(os.Stdout, "wrote %s\n", *htmlPath)
 	}
 	if run.Summary.Matches != run.Summary.Total {
-		return fmt.Errorf("%d of %d requests are incompatible; see %s", run.Summary.CompatibilityMismatches+run.Summary.TransportFailures, run.Summary.Total, *output)
+		return fmt.Errorf("%s; see %s", gateFailureSummary(run.Summary), *output)
 	}
 	fmt.Fprintln(os.Stdout, "migration gate passed")
 	return nil
+}
+
+func gateFailureSummary(summary report.Summary) string {
+	parts := make([]string, 0, 2)
+	if summary.CompatibilityMismatches > 0 {
+		parts = append(parts, fmt.Sprintf("%d compatibility mismatches", summary.CompatibilityMismatches))
+	}
+	if summary.TransportFailures > 0 {
+		parts = append(parts, fmt.Sprintf("%d transport failures", summary.TransportFailures))
+	}
+	return strings.Join(parts, " and ")
 }
 
 func runCompare(args []string) error {

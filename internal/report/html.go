@@ -56,7 +56,7 @@ ul { margin-top: .35rem; }
 		}
 	}
 	b.WriteString("</table>\n<h3>By classification</h3>\n<table><tr><th>Classification</th><th>Count</th></tr>\n")
-	for _, class := range []string{"MATCH", "VALUE_MISMATCH", "SHAPE_MISMATCH", "ERROR_MISMATCH", "TIMEOUT", "INVALID_RESPONSE", "INCONCLUSIVE"} {
+	for _, class := range []string{"MATCH", "VALUE_MISMATCH", "SHAPE_MISMATCH", "ERROR_MISMATCH", "TIMEOUT", "TRANSIENT_FAILURE", "INVALID_RESPONSE", "INCONCLUSIVE"} {
 		if count := run.Summary.ByCategory[class]; count > 0 {
 			b.WriteString("<tr><td>" + class + "</td><td>" + strconv.Itoa(count) + "</td></tr>\n")
 		}

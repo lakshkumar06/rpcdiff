@@ -93,6 +93,28 @@ requests cover valid reads plus deliberate error and pending-state cases. The
 CI-specific suite is intentionally small and deterministic so CI does not
 depend on public RPC availability or moving blockchain state.
 
+## Architecture
+
+The data path is intentionally small: the CLI validates configuration, the
+runner fans requests out through bounded RPC clients, and the comparator feeds
+one structured result into both report formats.
+
+```mermaid
+flowchart LR
+    A[CLI: compare / gate] --> B[Request loader]
+    B --> C[Bounded runner]
+    C --> D[Baseline RPC client]
+    C --> E[Candidate RPC client]
+    D --> F[Normalize + compare]
+    E --> F
+    F --> G[Terminal summary]
+    F --> H[JSON report]
+    F --> I[HTML report]
+```
+
+See [docs/rpcdiff-demo.mp4](docs/rpcdiff-demo.mp4) for a short walkthrough of
+the fixture gate and generated reports.
+
 ## Real endpoint suites
 
 `examples/public-requests.json` is the 16-request portfolio suite. It covers

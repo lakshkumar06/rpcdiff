@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"rpcdiff/internal/fixtures"
+	"rpcdiff/internal/report"
 )
 
 func TestCompareCLI(t *testing.T) {
@@ -66,4 +67,13 @@ func TestCompareCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = time.Second
+}
+
+func TestGateFailureSummaryNamesFailureTypes(t *testing.T) {
+	if got := gateFailureSummary(report.Summary{TransportFailures: 3}); got != "3 transport failures" {
+		t.Fatalf("transport-only summary = %q", got)
+	}
+	if got := gateFailureSummary(report.Summary{CompatibilityMismatches: 2, TransportFailures: 1}); got != "2 compatibility mismatches and 1 transport failures" {
+		t.Fatalf("mixed summary = %q", got)
+	}
 }
