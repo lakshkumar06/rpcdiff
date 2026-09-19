@@ -19,6 +19,7 @@ type CallOutcome struct {
 	URL            string
 	StatusCode     int
 	Latency        time.Duration
+	TotalLatency   time.Duration
 	HTTPError      string
 	Body           []byte
 	Parsed         *Response
@@ -70,69 +71,87 @@ func NewClientWithRetries(timeout time.Duration, retries int) *Client {
 	}
 }
 
-// Call sends req to endpointURL, retrying temporary failures. Authorization
-// headers are never set or logged.
+// Call sends req to endpointURL. Temporary failures are retried only for
+// reviewed read-only methods. Authorization headers are never set or logged.
 func (c *Client) Call(ctx context.Context, endpointURL string, req Request) CallOutcome {
 	if err := req.Validate(); err != nil {
-		return CallOutcome{URL: endpointURL, HTTPError: err.Error(), InvalidRequest: true}
+		return CallOutcome{URL: RedactURL(endpointURL), HTTPError: RedactText(err.Error()), InvalidRequest: true}
 	}
 	payload, err := json.Marshal(req)
 	if err != nil {
-		return CallOutcome{URL: endpointURL, HTTPError: fmt.Sprintf("marshal request: %v", err), InvalidRequest: true}
+		return CallOutcome{URL: RedactURL(endpointURL), HTTPError: RedactText(fmt.Sprintf("marshal request: %v", err)), InvalidRequest: true}
 	}
-	return c.callPayload(ctx, endpointURL, payload)
+	return c.callPayload(ctx, endpointURL, payload, c.retryCount(req.Method), len(req.ID) == 0)
 }
 
 // CallRaw sends an already encoded JSON-RPC request. It is used by the shadow
 // proxy so the baseline sees the same request body that the application sent.
 func (c *Client) CallRaw(ctx context.Context, endpointURL string, payload []byte) CallOutcome {
 	if len(bytes.TrimSpace(payload)) == 0 {
-		return CallOutcome{URL: endpointURL, HTTPError: "empty request body", InvalidRequest: true}
+		return CallOutcome{URL: RedactURL(endpointURL), HTTPError: "empty request body", InvalidRequest: true}
 	}
-	return c.callPayload(ctx, endpointURL, payload)
+	var req Request
+	parseErr := json.Unmarshal(payload, &req)
+	retries := 0
+	allowEmpty := parseErr == nil && len(req.ID) == 0
+	if parseErr == nil {
+		retries = c.retryCount(req.Method)
+	}
+	return c.callPayload(ctx, endpointURL, payload, retries, allowEmpty)
 }
 
-func (c *Client) callPayload(ctx context.Context, endpointURL string, payload []byte) CallOutcome {
+func (c *Client) retryCount(method string) int {
+	if IsReadOnlyMethod(method) {
+		return c.retries
+	}
+	return 0
+}
+
+func (c *Client) callPayload(ctx context.Context, endpointURL string, payload []byte, retries int, allowEmpty bool) CallOutcome {
 	var last CallOutcome
-	for attempt := 0; attempt <= c.retries; attempt++ {
+	totalStart := time.Now()
+	for attempt := 0; attempt <= retries; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(100*(1<<(attempt-1))) * time.Millisecond
 			timer := time.NewTimer(backoff)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				last = CallOutcome{URL: endpointURL, HTTPError: ctx.Err().Error(), Transient: true}
+				last = CallOutcome{URL: RedactURL(endpointURL), HTTPError: RedactText(ctx.Err().Error()), Transient: true}
 				last.Attempts = attempt
+				last.TotalLatency = time.Since(totalStart)
 				return last
 			case <-timer.C:
 			}
 		}
-		last = c.callOnce(ctx, endpointURL, payload)
+		last = c.callOnce(ctx, endpointURL, payload, allowEmpty)
 		last.Attempts = attempt + 1
-		if !last.Transient || attempt == c.retries {
+		if !last.Transient || attempt == retries {
+			last.TotalLatency = time.Since(totalStart)
 			return last
 		}
 	}
+	last.TotalLatency = time.Since(totalStart)
 	return last
 }
 
-func (c *Client) callOnce(ctx context.Context, endpointURL string, payload []byte) CallOutcome {
-	out := CallOutcome{URL: endpointURL}
+func (c *Client) callOnce(ctx context.Context, endpointURL string, payload []byte, allowEmpty bool) (out CallOutcome) {
+	out = CallOutcome{URL: RedactURL(endpointURL)}
+	start := time.Now()
+	defer func() { out.Latency = time.Since(start) }()
 
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(payload))
 	if err != nil {
-		out.HTTPError = fmt.Sprintf("build request: %v", err)
+		out.HTTPError = RedactText(fmt.Sprintf("build request: %v", err))
 		return out
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
 
-	start := time.Now()
 	resp, err := c.http.Do(httpReq)
-	out.Latency = time.Since(start)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded || isTimeout(err) {
 			out.TimedOut = true
@@ -140,7 +159,7 @@ func (c *Client) callOnce(ctx context.Context, endpointURL string, payload []byt
 			out.HTTPError = "request timed out"
 			return out
 		}
-		out.HTTPError = fmt.Sprintf("http do: %v", err)
+		out.HTTPError = RedactText(fmt.Sprintf("http do: %v", err))
 		return out
 	}
 	defer resp.Body.Close()
@@ -162,6 +181,9 @@ func (c *Client) callOnce(ctx context.Context, endpointURL string, payload []byt
 		return out
 	}
 	out.Body = body
+	if len(body) == 0 && allowEmpty && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return out
+	}
 
 	if resp.StatusCode >= 400 {
 		out.HTTPError = fmt.Sprintf("http status %d", resp.StatusCode)
@@ -189,20 +211,51 @@ func ParseResponse(body []byte) (*Response, error) {
 	if len(trimmed) == 0 {
 		return nil, fmt.Errorf("empty response body")
 	}
-	var raw Response
+	var envelope map[string]json.RawMessage
 	dec := json.NewDecoder(bytes.NewReader(trimmed))
 	dec.UseNumber()
-	if err := dec.Decode(&raw); err != nil {
+	if err := dec.Decode(&envelope); err != nil {
 		return nil, fmt.Errorf("malformed json: %w", err)
 	}
 	var extra json.RawMessage
 	if err := dec.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("malformed json: trailing data after first value")
 	}
-	raw.Raw = append(json.RawMessage(nil), trimmed...)
-	if !raw.HasResult() && !raw.HasError() {
+	_, hasResult := envelope["result"]
+	errorBody, hasError := envelope["error"]
+	if hasResult && hasError {
+		return nil, fmt.Errorf("json-rpc response contains both result and error")
+	}
+	if !hasResult && !hasError {
 		return nil, fmt.Errorf("json-rpc response missing both result and error")
 	}
+	if hasError {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(errorBody, &fields); err != nil || fields == nil {
+			return nil, fmt.Errorf("json-rpc error must be an object")
+		}
+		code, ok := fields["code"]
+		if !ok || string(bytes.TrimSpace(code)) == "null" {
+			return nil, fmt.Errorf("json-rpc error is missing code")
+		}
+		var codeValue int
+		if err := json.Unmarshal(code, &codeValue); err != nil {
+			return nil, fmt.Errorf("json-rpc error code must be an integer")
+		}
+		message, ok := fields["message"]
+		if !ok {
+			return nil, fmt.Errorf("json-rpc error is missing message")
+		}
+		var messageValue string
+		if err := json.Unmarshal(message, &messageValue); err != nil {
+			return nil, fmt.Errorf("json-rpc error message must be a string")
+		}
+	}
+	var raw Response
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
+		return nil, fmt.Errorf("malformed json-rpc response: %w", err)
+	}
+	raw.Raw = append(json.RawMessage(nil), trimmed...)
 	return &raw, nil
 }
 

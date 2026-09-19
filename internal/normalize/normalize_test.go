@@ -18,6 +18,15 @@ func TestCanonicalQuantity(t *testing.T) {
 	}
 }
 
+func TestCanonicalQuantityRejectsEmptyHex(t *testing.T) {
+	if got, ok := CanonicalQuantity("0x"); ok || got != "0x" {
+		t.Fatalf("empty quantity canonicalized as %q, ok=%v", got, ok)
+	}
+	if got, ok := CanonicalData("0x"); !ok || got != "0x" {
+		t.Fatalf("empty data changed: %q, ok=%v", got, ok)
+	}
+}
+
 func TestDoesNotPadData(t *testing.T) {
 	got, ok := CanonicalData("0xAb")
 	if !ok || got != "0xab" {

@@ -38,7 +38,7 @@ ul { margin-top: .35rem; }
 		b.WriteString("<div>Proxy: <code>" + html.EscapeString(run.Proxy) + "</code></div>")
 	}
 	b.WriteString("<div>Time: " + html.EscapeString(run.Timestamp.Format("2006-01-02 15:04:05 UTC")) + "</div>")
-	b.WriteString("<div>Requests: " + strconv.Itoa(run.Summary.Total) + " &nbsp; Matches: " + strconv.Itoa(run.Summary.Matches) + " &nbsp; Compatibility mismatches: " + strconv.Itoa(run.Summary.CompatibilityMismatches) + " &nbsp; Transport failures: " + strconv.Itoa(run.Summary.TransportFailures) + " &nbsp; Skipped: " + strconv.Itoa(run.Summary.Skipped) + "</div>")
+	b.WriteString("<div>Requests: " + strconv.Itoa(run.Summary.Total) + " &nbsp; Matches: " + strconv.Itoa(run.Summary.Matches) + " &nbsp; Compatibility mismatches: " + strconv.Itoa(run.Summary.CompatibilityMismatches) + " &nbsp; Transport failures: " + strconv.Itoa(run.Summary.TransportFailures) + " &nbsp; Baseline failures: " + strconv.Itoa(run.Summary.BaselineFailures) + " &nbsp; Skipped: " + strconv.Itoa(run.Summary.Skipped) + "</div>")
 	statusClass, status := "pass", "COMPATIBLE"
 	if run.Summary.CompatibilityMismatches > 0 || run.Summary.TransportFailures > 0 {
 		statusClass, status = "fail", "INCOMPATIBLE"

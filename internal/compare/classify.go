@@ -35,16 +35,18 @@ type Result struct {
 }
 
 type Side struct {
-	LatencyMS      float64         `json:"latencyMs"`
-	StatusCode     int             `json:"statusCode"`
-	HTTPError      string          `json:"httpError,omitempty"`
-	TimedOut       bool            `json:"timedOut"`
-	Transient      bool            `json:"transient"`
-	Attempts       int             `json:"attempts"`
-	JSONRPCError   bool            `json:"jsonrpcError"`
-	ParseError     string          `json:"parseError,omitempty"`
-	InvalidRequest bool            `json:"invalidRequest,omitempty"`
-	Response       json.RawMessage `json:"response,omitempty"`
+	LatencyMS        float64         `json:"latencyMs"`
+	AttemptLatencyMS float64         `json:"attemptLatencyMs"`
+	TotalLatencyMS   float64         `json:"totalLatencyMs"`
+	StatusCode       int             `json:"statusCode"`
+	HTTPError        string          `json:"httpError,omitempty"`
+	TimedOut         bool            `json:"timedOut"`
+	Transient        bool            `json:"transient"`
+	Attempts         int             `json:"attempts"`
+	JSONRPCError     bool            `json:"jsonrpcError"`
+	ParseError       string          `json:"parseError,omitempty"`
+	InvalidRequest   bool            `json:"invalidRequest,omitempty"`
+	Response         json.RawMessage `json:"response,omitempty"`
 }
 
 func classify(baseline, candidate rpc.CallOutcome, diffs []Diff) (Classification, []string) {
@@ -126,15 +128,21 @@ func shapeDiff(diffs []Diff) bool {
 
 func sideFrom(o rpc.CallOutcome) Side {
 	s := Side{
-		LatencyMS:      float64(o.Latency) / float64(time.Millisecond),
-		StatusCode:     o.StatusCode,
-		HTTPError:      o.HTTPError,
-		TimedOut:       o.TimedOut,
-		Transient:      o.Transient,
-		Attempts:       o.Attempts,
-		JSONRPCError:   o.JSONRPCError,
-		ParseError:     o.ParseError,
-		InvalidRequest: o.InvalidRequest,
+		LatencyMS:        float64(o.TotalLatency) / float64(time.Millisecond),
+		AttemptLatencyMS: float64(o.Latency) / float64(time.Millisecond),
+		TotalLatencyMS:   float64(o.TotalLatency) / float64(time.Millisecond),
+		StatusCode:       o.StatusCode,
+		HTTPError:        rpc.RedactText(o.HTTPError),
+		TimedOut:         o.TimedOut,
+		Transient:        o.Transient,
+		Attempts:         o.Attempts,
+		JSONRPCError:     o.JSONRPCError,
+		ParseError:       o.ParseError,
+		InvalidRequest:   o.InvalidRequest,
+	}
+	if o.TotalLatency == 0 {
+		s.LatencyMS = s.AttemptLatencyMS
+		s.TotalLatencyMS = s.AttemptLatencyMS
 	}
 	if len(o.Body) > 0 {
 		if json.Valid(o.Body) {

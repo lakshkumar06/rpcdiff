@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"rpcdiff/internal/compare"
+	"rpcdiff/internal/rpc"
 )
 
 type Run struct {
@@ -32,6 +33,7 @@ type Summary struct {
 	Matches                 int            `json:"matches"`
 	CompatibilityMismatches int            `json:"compatibilityMismatches"`
 	TransportFailures       int            `json:"transportFailures"`
+	BaselineFailures        int            `json:"baselineFailures"`
 	Skipped                 int            `json:"skipped"`
 	ByCategory              map[string]int `json:"byCategory"`
 	Slowest                 []SlowRequest  `json:"slowest"`
@@ -45,7 +47,7 @@ type SlowRequest struct {
 	MaxMS       float64 `json:"maxMs"`
 }
 
-const Version = "0.3.0"
+const Version = "0.4.0"
 
 func Build(baseline, candidate, timeout string, results []compare.Result) Run {
 	return BuildMode("compare", baseline, candidate, "", timeout, results)
@@ -59,6 +61,9 @@ func BuildMode(mode, baseline, candidate, proxy, timeout string, results []compa
 	slow := make([]SlowRequest, 0, len(results))
 	for i, r := range results {
 		sum.ByCategory[string(r.Classification)]++
+		if baselineFailure(r.Baseline) {
+			sum.BaselineFailures++
+		}
 		switch r.Classification {
 		case compare.Match:
 			sum.Matches++
@@ -66,6 +71,9 @@ func BuildMode(mode, baseline, candidate, proxy, timeout string, results []compa
 			sum.TransportFailures++
 		case compare.Skipped:
 			sum.Skipped++
+			if baselineFailure(r.Baseline) {
+				sum.TransportFailures++
+			}
 		default:
 			sum.CompatibilityMismatches++
 		}
@@ -91,15 +99,26 @@ func BuildMode(mode, baseline, candidate, proxy, timeout string, results []compa
 		Version:    Version,
 		Mode:       mode,
 		Timestamp:  time.Now().UTC(),
-		Baseline:   baseline,
-		Candidate:  candidate,
-		Proxy:      proxy,
+		Baseline:   redactEndpoint(baseline),
+		Candidate:  redactEndpoint(candidate),
+		Proxy:      redactEndpoint(proxy),
 		Timeout:    timeout,
 		Requests:   len(results),
 		Summary:    sum,
 		Results:    results,
 		Disclaimer: "This report compares JSON-RPC responses using deterministic rules. It does not prove semantic equivalence of Ethereum implementations or pin chain state.",
 	}
+}
+
+func redactEndpoint(endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
+	return rpc.RedactURL(endpoint)
+}
+
+func baselineFailure(side compare.Side) bool {
+	return side.HTTPError != "" || side.ParseError != "" || side.TimedOut || side.Transient || side.StatusCode >= 400
 }
 
 func WriteJSON(path string, run Run) error {
@@ -118,6 +137,7 @@ func PrintSummary(w io.Writer, run Run) {
 	fmt.Fprintf(w, "matches                 %d\n", run.Summary.Matches)
 	fmt.Fprintf(w, "compatibility mismatches %d\n", run.Summary.CompatibilityMismatches)
 	fmt.Fprintf(w, "transport failures       %d  (transient / timeout / invalid / inconclusive)\n", run.Summary.TransportFailures)
+	fmt.Fprintf(w, "baseline failures        %d\n", run.Summary.BaselineFailures)
 	fmt.Fprintf(w, "skipped                  %d  (write or unknown methods)\n", run.Summary.Skipped)
 	fmt.Fprintln(w, "by category")
 	cats := make([]string, 0, len(run.Summary.ByCategory))

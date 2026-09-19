@@ -15,10 +15,16 @@ func Pair(method string, params json.RawMessage, baseline, candidate rpc.CallOut
 // Skipped records a request that was intentionally sent only to the baseline.
 // It is used by shadow mode for methods outside the conservative read allowlist.
 func SkippedResult(method string, params json.RawMessage, baseline rpc.CallOutcome, note string) Result {
+	return UncomparedResult(method, params, Skipped, baseline, note)
+}
+
+// UncomparedResult records a result for which candidate comparison did not
+// happen, while preserving the baseline side and a meaningful classification.
+func UncomparedResult(method string, params json.RawMessage, classification Classification, baseline rpc.CallOutcome, note string) Result {
 	return Result{
 		Method:         method,
 		Params:         params,
-		Classification: Skipped,
+		Classification: classification,
 		Baseline:       sideFrom(baseline),
 		Notes:          []string{note},
 	}

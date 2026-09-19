@@ -216,7 +216,7 @@ func normalizeLog(v compare.Value, notes *[]string) compare.Value {
 }
 
 func CanonicalQuantity(s string) (string, bool) {
-	if !isHexString(s) {
+	if len(s) <= 2 || !isHexString(s) {
 		return s, false
 	}
 	hexdigits := s[2:]
