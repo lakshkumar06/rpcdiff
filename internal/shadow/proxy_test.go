@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -114,6 +115,93 @@ func TestProxySkipsWriteMethod(t *testing.T) {
 	}
 }
 
+func TestProxyPreservesSuccessfulNotification(t *testing.T) {
+	baseServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	candidateCalls := atomic.Int32{}
+	candidateServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		candidateCalls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	proxy, err := NewProxy(Config{Baseline: baseServer.URL, Candidate: candidateServer.URL, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyServer := httptest.NewServer(proxy.Handler())
+	t.Cleanup(func() {
+		proxyServer.Close()
+		baseServer.Close()
+		candidateServer.Close()
+	})
+	resp, err := http.Post(proxyServer.URL, "application/json", bytes.NewBufferString(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent || len(body) != 0 {
+		t.Fatalf("notification response = status %d body %q", resp.StatusCode, body)
+	}
+	results := proxy.Wait()
+	if candidateCalls.Load() != 0 || len(results) != 1 || results[0].Classification != compare.Skipped {
+		t.Fatalf("notification handling: candidate=%d results=%+v", candidateCalls.Load(), results)
+	}
+}
+
+func TestProxyBoundsCandidateWorkersAndQueue(t *testing.T) {
+	var activeCandidates atomic.Int32
+	var maxActive atomic.Int32
+	baseServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeFixtureResponse(w, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+	}))
+	candidateServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		active := activeCandidates.Add(1)
+		for {
+			old := maxActive.Load()
+			if active <= old || maxActive.CompareAndSwap(old, active) {
+				break
+			}
+		}
+		time.Sleep(60 * time.Millisecond)
+		writeFixtureResponse(w, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+		activeCandidates.Add(-1)
+	}))
+	proxy, err := NewProxy(Config{Baseline: baseServer.URL, Candidate: candidateServer.URL, Timeout: time.Second, Workers: 1, Queue: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyServer := httptest.NewServer(proxy.Handler())
+	t.Cleanup(func() {
+		proxyServer.Close()
+		baseServer.Close()
+		candidateServer.Close()
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := http.Post(proxyServer.URL, "application/json", bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+			if err != nil {
+				t.Errorf("proxy request: %v", err)
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}()
+	}
+	wg.Wait()
+	results := proxy.Wait()
+	if len(results) != 8 {
+		t.Fatalf("recorded %d results, want 8", len(results))
+	}
+	if maxActive.Load() > 1 {
+		t.Fatalf("candidate workers exceeded configured bound: %d", maxActive.Load())
+	}
+}
+
 func exerciseProxy(t *testing.T, baseline, candidate func(http.ResponseWriter, *http.Request), payload string) ([]compare.Result, []byte, time.Duration) {
 	return exerciseProxyWithConfig(t, Config{Timeout: time.Second}, baseline, candidate, payload)
 }
@@ -124,7 +212,7 @@ func exerciseProxyWithConfig(t *testing.T, cfg Config, baseline, candidate func(
 	candidateServer := httptest.NewServer(http.HandlerFunc(candidate))
 	proxy, err := NewProxy(Config{
 		Baseline: baseServer.URL, Candidate: candidateServer.URL, Timeout: cfg.Timeout,
-		Retries: cfg.Retries, IgnoreErrorMessages: cfg.IgnoreErrorMessages,
+		Retries: cfg.Retries, Workers: cfg.Workers, Queue: cfg.Queue, IgnoreErrorMessages: cfg.IgnoreErrorMessages,
 	})
 	if err != nil {
 		t.Fatal(err)

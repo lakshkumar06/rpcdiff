@@ -95,6 +95,8 @@ shadow flags:
   --html FILE        HTML report (default shadow-report.html)
   --timeout DURATION Candidate/baseline request timeout (default 5s)
   --retries N        Candidate retries after the initial attempt (default 0)
+  --workers N        Bounded candidate worker count (default 4)
+  --queue N          Bounded candidate queue size (default 256)
   --duration DURATION Stop automatically after this duration (default waits for signal)
   --ci               Exit non-zero for incompatibilities or provider failures
   --strict-errors    Treat differing JSON-RPC error messages as mismatches
@@ -185,6 +187,8 @@ func runShadow(args []string) error {
 	htmlPath := fs.String("html", "shadow-report.html", "HTML report output")
 	timeout := fs.Duration("timeout", 5*time.Second, "per-provider request timeout")
 	retries := fs.Int("retries", 0, "candidate retries after the initial attempt")
+	workers := fs.Int("workers", 4, "bounded candidate worker count")
+	queue := fs.Int("queue", 256, "bounded candidate queue size")
 	duration := fs.Duration("duration", 0, "stop automatically after this duration")
 	ci := fs.Bool("ci", false, "exit non-zero for incompatibilities or provider failures")
 	strictErrors := fs.Bool("strict-errors", false, "fail on differing JSON-RPC error messages")
@@ -196,6 +200,7 @@ func runShadow(args []string) error {
 	}
 	proxy, err := shadow.NewProxy(shadow.Config{
 		Baseline: *baseline, Candidate: *candidate, Timeout: *timeout, Retries: *retries,
+		Workers: *workers, Queue: *queue,
 		IgnoreErrorMessages: !*strictErrors,
 	})
 	if err != nil {
@@ -235,7 +240,10 @@ func runShadow(args []string) error {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown proxy: %w", err)
 	}
-	run := proxy.Report(proxyURL)
+	run, err := proxy.Report(proxyURL)
+	if err != nil {
+		return fmt.Errorf("read shadow report spool: %w", err)
+	}
 	if err := report.WriteJSON(*output, run); err != nil {
 		return fmt.Errorf("write json report: %w", err)
 	}

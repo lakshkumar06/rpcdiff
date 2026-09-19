@@ -12,6 +12,7 @@ When you migrate from one RPC provider or client to another (Geth → Erigon, a 
 
 - POSTs each request in a JSON file to a **baseline** URL and a **candidate** URL
 - Records HTTP status, JSON-RPC errors, latency, and raw bodies
+- Redacts provider credentials from endpoint metadata and transport errors
 - Recursively compares JSON (object key order ignored, array order matters, missing ≠ null)
 - Applies **conservative, documented** hex normalization for six common methods
 - Writes a terminal summary, a JSON report, and an optional HTML table
@@ -71,6 +72,13 @@ uses no retries, so the proxy does not replay a transaction. Candidate calls
 can be retried with `--retries`; candidate latency and provider errors are
 recorded in the report and never delay the baseline response.
 
+Automatic retries in `compare`, `gate`, and shadow candidate calls are limited
+to the reviewed read-only method allowlist. State-changing methods are sent
+once. Shadow candidate work uses a bounded worker pool and queue; if the queue
+is full, the read is recorded as a transport failure instead of growing memory
+or delaying the baseline response. Reports redact credentials in provider URLs
+and transport-error text.
+
 Start a local proxy for a staging application:
 
 ```bash
@@ -80,7 +88,9 @@ go run ./cmd/rpcdiff shadow \
   --listen 127.0.0.1:18547 \
   --output shadow-report.json \
   --html shadow-report.html \
-  --timeout 5s
+  --timeout 5s \
+  --workers 4 \
+  --queue 256
 ```
 
 Configure the application or staging job to use
@@ -108,6 +118,10 @@ seconds. CI exits non-zero for compatibility mismatches or provider/transport
 failures. `MATCH` and `SKIPPED` results pass; skipped writes remain visible in
 both reports so the traffic coverage is auditable.
 
+JSON-RPC notifications with no `id` are forwarded to baseline and preserve a
+successful empty response. They are recorded as skipped because there is no
+response envelope to compare.
+
 ## CI migration gate
 
 Use `gate` before changing the RPC endpoint used by an application. It runs the
@@ -127,8 +141,9 @@ Provider-specific JSON-RPC error wording is ignored by the gate by default;
 error codes, error data, results, response shape, timeouts, and malformed
 responses still fail it. Use `--strict-errors` to compare error messages too.
 HTTP 301, 429, and 503 responses plus request timeouts are retried three times
-with exponential backoff. If the temporary failure persists, the report marks
-the request `TRANSIENT_FAILURE` so it is distinguishable from an incompatibility.
+for reviewed read methods with exponential backoff. State-changing methods are
+never retried. If the temporary failure persists, the report marks the request
+`TRANSIENT_FAILURE` so it is distinguishable from an incompatibility.
 Upload `migration-report.html` as a CI artifact for a readable per-request
 report, or use the JSON file for annotations and automation.
 

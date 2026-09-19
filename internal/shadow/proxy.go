@@ -25,50 +25,19 @@ type Config struct {
 	Candidate           string
 	Timeout             time.Duration
 	Retries             int
+	Workers             int
+	Queue               int
 	IgnoreErrorMessages bool
 }
 
 // ReadOnlyMethods is a conservative allowlist. Unknown methods are sent only
 // to the baseline until they are explicitly reviewed and added here.
-var ReadOnlyMethods = map[string]bool{
-	"web3_clientVersion": true,
-	"web3_sha3":          true,
-	"net_version":        true,
-	"net_listening":      true,
-	"net_peerCount":      true,
+var ReadOnlyMethods = rpc.ReadOnlyMethods
 
-	"eth_protocolVersion":                  true,
-	"eth_syncing":                          true,
-	"eth_chainId":                          true,
-	"eth_blockNumber":                      true,
-	"eth_coinbase":                         true,
-	"eth_mining":                           true,
-	"eth_hashrate":                         true,
-	"eth_gasPrice":                         true,
-	"eth_blobBaseFee":                      true,
-	"eth_maxPriorityFeePerGas":             true,
-	"eth_feeHistory":                       true,
-	"eth_getBalance":                       true,
-	"eth_getStorageAt":                     true,
-	"eth_getTransactionCount":              true,
-	"eth_getBlockTransactionCountByHash":   true,
-	"eth_getBlockTransactionCountByNumber": true,
-	"eth_getUncleCountByBlockHash":         true,
-	"eth_getUncleCountByBlockNumber":       true,
-	"eth_getCode":                          true,
-	"eth_call":                             true,
-	"eth_estimateGas":                      true,
-	"eth_getBlockByHash":                   true,
-	"eth_getBlockByNumber":                 true,
-	"eth_getTransactionByHash":             true,
-	"eth_getTransactionReceipt":            true,
-	"eth_getUncleByBlockHashAndIndex":      true,
-	"eth_getUncleByBlockNumberAndIndex":    true,
-	"eth_getLogs":                          true,
-	"eth_getProof":                         true,
-	"eth_getBlockReceipts":                 true,
-	"eth_getRawTransactionByHash":          true,
-	"eth_getRawTransactionFromBlock":       true,
+type candidateJob struct {
+	req      rpc.Request
+	body     []byte
+	baseline rpc.CallOutcome
 }
 
 // Proxy forwards application traffic to baseline and records asynchronous
@@ -77,10 +46,13 @@ type Proxy struct {
 	config          Config
 	baselineClient  *rpc.Client
 	candidateClient *rpc.Client
+	jobs            chan candidateJob
+	workersWG       sync.WaitGroup
+	store           *resultStore
 
-	mu      sync.Mutex
-	results []compare.Result
-	wg      sync.WaitGroup
+	waitOnce    sync.Once
+	waitResults []compare.Result
+	waitErr     error
 }
 
 func NewProxy(cfg Config) (*Proxy, error) {
@@ -93,11 +65,28 @@ func NewProxy(cfg Config) (*Proxy, error) {
 	if cfg.Retries < 0 {
 		cfg.Retries = 0
 	}
-	return &Proxy{
+	if cfg.Workers <= 0 {
+		cfg.Workers = 4
+	}
+	if cfg.Queue <= 0 {
+		cfg.Queue = 256
+	}
+	store, err := newResultStore()
+	if err != nil {
+		return nil, err
+	}
+	p := &Proxy{
 		config:          cfg,
 		baselineClient:  rpc.NewClientWithRetries(cfg.Timeout, 0),
 		candidateClient: rpc.NewClientWithRetries(cfg.Timeout, cfg.Retries),
-	}, nil
+		jobs:            make(chan candidateJob, cfg.Queue),
+		store:           store,
+	}
+	for i := 0; i < cfg.Workers; i++ {
+		p.workersWG.Add(1)
+		go p.worker()
+	}
+	return p, nil
 }
 
 func (p *Proxy) Handler() http.Handler {
@@ -131,24 +120,20 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		p.record(compare.SkippedResult(req.Method, req.Params, baseline, "candidate duplication skipped: method is not on the read-only allowlist"))
 		return
 	}
+	if len(req.ID) == 0 {
+		p.record(compare.SkippedResult(req.Method, req.Params, baseline, "candidate comparison skipped: notifications have no response to compare"))
+		return
+	}
 
-	// Candidate work starts after the baseline response has been written. Its
-	// latency and failures therefore cannot delay the application's response.
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
-		candidate := p.candidateClient.CallRaw(context.Background(), p.config.Candidate, body)
-		baseForCompare, baseNormalization := normalize.Outcome(req.Method, baseline)
-		candidateForCompare, candidateNormalization := normalize.Outcome(req.Method, candidate)
-		p.record(compare.PairWithOptions(
-			req.Method,
-			req.Params,
-			baseForCompare,
-			candidateForCompare,
-			baseNormalization.Applied || candidateNormalization.Applied || normalize.Supported[req.Method],
-			compare.Options{IgnoreErrorMessages: p.config.IgnoreErrorMessages},
-		))
-	}()
+	// Candidate work is bounded and starts after the baseline response has been
+	// written. A full queue records a transport failure without delaying the
+	// application's response or growing memory without limit.
+	job := candidateJob{req: req, body: append([]byte(nil), body...), baseline: baseline}
+	select {
+	case p.jobs <- job:
+	default:
+		p.record(compare.UncomparedResult(req.Method, req.Params, compare.TransientFailure, baseline, "candidate duplication skipped: worker queue is full"))
+	}
 }
 
 func parseRequest(body []byte) (rpc.Request, error) {
@@ -172,7 +157,7 @@ func writeOutcome(w http.ResponseWriter, outcome rpc.CallOutcome, req rpc.Reques
 	w.Header().Set("Content-Type", "application/json")
 	status := outcome.StatusCode
 	body := outcome.Body
-	if status == 0 || len(body) == 0 {
+	if status == 0 {
 		status = http.StatusBadGateway
 		id := req.ID
 		if len(id) == 0 {
@@ -185,9 +170,7 @@ func writeOutcome(w http.ResponseWriter, outcome rpc.CallOutcome, req rpc.Reques
 }
 
 func (p *Proxy) record(result compare.Result) {
-	p.mu.Lock()
-	p.results = append(p.results, result)
-	p.mu.Unlock()
+	_ = p.store.append(result)
 }
 
 func (p *Proxy) recordUncompared(req rpc.Request, baseline rpc.CallOutcome, note string) {
@@ -195,49 +178,40 @@ func (p *Proxy) recordUncompared(req rpc.Request, baseline rpc.CallOutcome, note
 	if len(params) == 0 {
 		params = json.RawMessage("null")
 	}
-	p.record(compare.Result{
-		Method:         "<invalid>",
-		Params:         params,
-		Classification: compare.Inconclusive,
-		Baseline:       sideFromOutcome(baseline),
-		Notes:          []string{note},
-	})
+	p.record(compare.UncomparedResult("<invalid>", params, compare.Inconclusive, baseline, note))
+}
+
+func (p *Proxy) worker() {
+	defer p.workersWG.Done()
+	for job := range p.jobs {
+		candidate := p.candidateClient.CallRaw(context.Background(), p.config.Candidate, job.body)
+		baseForCompare, baseNormalization := normalize.Outcome(job.req.Method, job.baseline)
+		candidateForCompare, candidateNormalization := normalize.Outcome(job.req.Method, candidate)
+		p.record(compare.PairWithOptions(
+			job.req.Method,
+			job.req.Params,
+			baseForCompare,
+			candidateForCompare,
+			baseNormalization.Applied || candidateNormalization.Applied || normalize.Supported[job.req.Method],
+			compare.Options{IgnoreErrorMessages: p.config.IgnoreErrorMessages},
+		))
+	}
 }
 
 // Wait blocks until all candidate requests have finished and returns a stable
-// copy of the recorded results.
+// copy of the streamed results.
 func (p *Proxy) Wait() []compare.Result {
-	p.wg.Wait()
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	results := make([]compare.Result, len(p.results))
-	copy(results, p.results)
+	p.waitOnce.Do(func() {
+		close(p.jobs)
+		p.workersWG.Wait()
+		p.waitResults, p.waitErr = p.store.readAll()
+	})
+	results := make([]compare.Result, len(p.waitResults))
+	copy(results, p.waitResults)
 	return results
 }
 
-func (p *Proxy) Report(proxyURL string) report.Run {
-	return report.BuildMode("shadow", p.config.Baseline, p.config.Candidate, proxyURL, p.config.Timeout.String(), p.Wait())
-}
-
-// sideFromOutcome keeps invalid incoming requests visible in a shadow report
-// without making the compare package's internal side conversion public.
-func sideFromOutcome(outcome rpc.CallOutcome) compare.Side {
-	var response json.RawMessage
-	if len(outcome.Body) > 0 {
-		if json.Valid(outcome.Body) {
-			response = append(json.RawMessage(nil), outcome.Body...)
-		}
-	}
-	return compare.Side{
-		LatencyMS:      float64(outcome.Latency) / float64(time.Millisecond),
-		StatusCode:     outcome.StatusCode,
-		HTTPError:      outcome.HTTPError,
-		TimedOut:       outcome.TimedOut,
-		Transient:      outcome.Transient,
-		Attempts:       outcome.Attempts,
-		JSONRPCError:   outcome.JSONRPCError,
-		ParseError:     outcome.ParseError,
-		InvalidRequest: outcome.InvalidRequest,
-		Response:       response,
-	}
+func (p *Proxy) Report(proxyURL string) (report.Run, error) {
+	run := report.BuildMode("shadow", p.config.Baseline, p.config.Candidate, proxyURL, p.config.Timeout.String(), p.Wait())
+	return run, p.waitErr
 }
